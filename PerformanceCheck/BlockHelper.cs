@@ -4,10 +4,8 @@ using Neo.Persistence;
 
 namespace Neo.Plugins
 {
-    internal static class Helper
+    internal static class BlockHelper
     {
-        #region BlockHelper
-
         /// <summary>
         /// Returns the time the given block was active
         /// </summary>
@@ -50,17 +48,16 @@ namespace Neo.Plugins
             var firstIndex = Blockchain.GenesisBlock.Index;
             var blockHash = snapshot.CurrentBlockHash;
 
-            var countedBlocks = 0;
+            var countedBlocks = -1;
             Block block = snapshot.GetBlock(blockHash);
-            ulong totaltime = block.GetTime();
+            ulong totaltime = 0;
 
-            block = snapshot.GetBlock(block.PrevHash);
-            while (block != null && block.Index != firstIndex && desiredCount > countedBlocks)
+            do
             {
                 totaltime += block.GetTime();
                 block = snapshot.GetBlock(block.PrevHash);
                 countedBlocks++;
-            }
+            } while (block != null && block.Index != firstIndex && desiredCount > countedBlocks);
 
             double averageTime = 0.0;
             if (countedBlocks > 0)
@@ -70,7 +67,5 @@ namespace Neo.Plugins
 
             return averageTime;
         }
-
-        #endregion
     }
 }
