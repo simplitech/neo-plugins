@@ -1,6 +1,9 @@
 using Neo.Ledger;
 using Neo.Network.P2P.Payloads;
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Threading.Tasks;
 
 namespace Neo.Plugins
 {
@@ -23,6 +26,8 @@ namespace Neo.Plugins
                     return OnHelpCommand(args);
                 case "block":
                     return OnBlockCommand(args);
+                case "check":
+                    return OnCheckCommand(args);
             }
             return false;
         }
@@ -42,6 +47,10 @@ namespace Neo.Plugins
             Console.WriteLine("Block Commands:");
             Console.WriteLine("\tblock time <index/hash>");
             Console.WriteLine("\tblock avgtime [1 - 10000]");
+            Console.WriteLine("Check Commands:");
+            Console.WriteLine("\tcheck cpu");
+            Console.WriteLine("\tcheck memory");
+            Console.WriteLine("\tcheck threads");
 
             return true;
         }
@@ -147,6 +156,95 @@ namespace Neo.Plugins
 
                 return true;
             }
+        }
+
+        /// <summary>
+        /// Process "check" command
+        /// </summary>
+        private bool OnCheckCommand(string[] args)
+        {
+            if (args.Length < 2) return false;
+            switch (args[1].ToLower())
+            {
+                case "cpu":
+                    return OnCheckCPUCommand();
+                case "threads":
+                case "activethreads":
+                    return OnCheckActiveThreadsCommand();
+                case "mem":
+                case "memory":
+                    return OnCheckMemoryCommand();
+                default:
+                    return false;
+            }
+        }
+
+        /// <summary>
+        /// Process "check cpu" command
+        /// Prints each thread CPU usage information every second
+        /// </summary>
+        private bool OnCheckCPUCommand()
+        {
+            bool run = true;
+
+            Task task = Task.Run(async () =>
+            {
+                var monitor = new CpuUsageMonitor();
+
+                while (run)
+                {
+                    try
+                    {
+                        var total = monitor.CheckAllThreads(run);
+                        if (run)
+                        {
+                            Console.WriteLine($"Active threads: {monitor.ThreadCount,3}\tTotal CPU usage: {total,8:0.00 %}");
+                        }
+
+                        await Task.Delay(1000);
+                    }
+                    catch
+                    {
+                        // if any unexpected exception is thrown, stop the loop and finish the task
+                        run = false;
+                    }
+                }
+            });
+            Console.ReadLine();
+
+            run = false;
+            task.Wait();
+
+            return true;
+        }
+
+        /// <summary>
+        /// Process "check threads" command
+        /// Prints the number of active threads in the current process
+        /// </summary>
+        private bool OnCheckActiveThreadsCommand()
+        {
+            var current = Process.GetCurrentProcess();
+
+            Console.WriteLine($"Active threads: {current.Threads.Count}");
+
+            return true;
+        }
+
+        /// <summary>
+        /// Process "check memory" command
+        /// Prints the amount of memory allocated for the current process in megabytes
+        /// </summary>
+        /// <param name="args"></param>
+        /// <returns></returns>
+        private bool OnCheckMemoryCommand()
+        {
+            var current = Process.GetCurrentProcess();
+            var memoryInMB = current.PagedMemorySize64 / 1024 / 1024.0;
+
+            Console.WriteLine($"Allocated memory: {memoryInMB:0.00} MB");
+
+            return true;
         }
     }
 }
