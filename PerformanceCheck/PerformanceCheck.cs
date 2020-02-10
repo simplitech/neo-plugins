@@ -1,3 +1,4 @@
+using Akka.Actor;
 using Neo.Ledger;
 using Neo.Network.P2P;
 using Neo.Network.P2P.Payloads;
@@ -199,7 +200,7 @@ namespace Neo.Plugins
         /// synchronization between the local and the remote nodes in milliseconds; otherwise,
         /// returns zero.
         /// </returns>
-        private long GetBlockSynchronizationDelay()
+        private double GetBlockSynchronizationDelay()
         {
             var lastBlockRemote = GetMaxRemoteBlockCount();
             if (lastBlockRemote == 0)
@@ -207,69 +208,33 @@ namespace Neo.Plugins
                 return 0;
             }
 
-            var lastBlockLocal = Blockchain.Singleton.Height;
-
-            long remoteDelay = 0;
-            long localDelay = 0;
-            long delay = 0;
-
+            DateTime remote = DateTime.Now;
+            DateTime local = remote;
             Task monitorRemote = new Task(() =>
             {
-                var currentBlockRemote = lastBlockRemote;
+                uint currentBlockRemote;
                 do
                 {
                     // just wait for the next remote block
                     currentBlockRemote = GetMaxRemoteBlockCount();
                 } while (lastBlockRemote == currentBlockRemote);
-
-                Stopwatch watch = Stopwatch.StartNew();
-                while (currentBlockRemote > Blockchain.Singleton.Height)
-                {
-                    // just wait for the next local block
-                }
-                watch.Stop();
-                remoteDelay = watch.ElapsedMilliseconds;
+                remote = DateTime.Now;
             });
+
             Task monitorLocal = new Task(() =>
             {
-                var currentBlockLocal = lastBlockLocal;
-                do
-                {
-                    // just wait for the next local block
-                    currentBlockLocal = Blockchain.Singleton.Height;
-                } while (lastBlockLocal == currentBlockLocal);
-
-                Stopwatch watch = Stopwatch.StartNew();
-                while (currentBlockLocal > GetMaxRemoteBlockCount())
-                {
-                    // just wait for the next next block
-                }
-                watch.Stop();
-                localDelay = watch.ElapsedMilliseconds;
+                var monitor = MonitorNode.StartNew(System);
+                monitor.WaitForBlock();
+                local = DateTime.Now;
             });
 
-            if (lastBlockRemote <= lastBlockLocal)
-            {
-                // the local node is fully synchronized
-                monitorLocal.Start();
-                monitorRemote.Start();
+            monitorRemote.Start();
+            monitorLocal.Start();
+            Task.WaitAll(monitorRemote, monitorLocal);
 
-                Task.WaitAll(monitorLocal, monitorRemote);
-                delay = Math.Max(remoteDelay, localDelay);
-            }
-            else
-            {
-                // the local node is synchronizing
-                Stopwatch watch = Stopwatch.StartNew();
-                while (lastBlockRemote > Blockchain.Singleton.Height)
-                {
-                    // just wait for local node synchronize
-                }
-                watch.Stop();
-                delay = watch.ElapsedMilliseconds;
-            }
+            var delay = remote - local;
 
-            return delay;
+            return Math.Abs(delay.TotalMilliseconds);
         }
 
         /// <summary>
@@ -282,6 +247,7 @@ namespace Neo.Plugins
         private uint GetMaxRemoteBlockCount()
         {
             var remotes = LocalNode.Singleton.GetRemoteNodes();
+
             uint maxCount = 0;
 
             foreach (var node in remotes)
