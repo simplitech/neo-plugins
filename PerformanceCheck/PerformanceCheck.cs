@@ -185,8 +185,7 @@ namespace Neo.Plugins
             }
             else
             {
-                Console.WriteLine("Waiting for the next block...");
-                var delayInSeconds = GetBlockSynchronizationDelay() / 1000.0;
+                var delayInSeconds = GetBlockSynchronizationDelay(true) / 1000.0;
                 Console.WriteLine($"Time to synchronize to the last remote block: {delayInSeconds:0.#} sec");
             }
 
@@ -194,14 +193,14 @@ namespace Neo.Plugins
         }
 
         /// <summary>
-        /// Calculates the delay in the synchronization of the blocks in the network
+        /// Calculates the delay in the synchronization of the blocks between the connected nodes
         /// </summary>
         /// <returns>
         /// If the number of remote nodes is greater than zero, returns the delay in the
         /// synchronization between the local and the remote nodes in milliseconds; otherwise,
         /// returns zero.
         /// </returns>
-        private double GetBlockSynchronizationDelay()
+        private double GetBlockSynchronizationDelay(bool printMessages = false)
         {
             var lastBlockRemote = GetMaxRemoteBlockCount();
             if (lastBlockRemote == 0)
@@ -209,28 +208,42 @@ namespace Neo.Plugins
                 return 0;
             }
 
+            bool showBlock = printMessages;
             DateTime remote = DateTime.Now;
             DateTime local = remote;
+
+            NodeMonitor monitor = NodeMonitor.StartNew(System, lastBlockRemote);
             Task monitorRemote = new Task(() =>
             {
-                uint currentBlockRemote;
-                do
-                {
-                    // just wait for the next remote block
-                    currentBlockRemote = GetMaxRemoteBlockCount();
-                } while (lastBlockRemote == currentBlockRemote);
+                monitor.WaitRemoteBlock();
                 remote = DateTime.Now;
+                if (showBlock)
+                {
+                    showBlock = false;
+                    Console.WriteLine($"Updated block index to {monitor.LastRemoteBlockIndex}");
+                }
             });
 
             Task monitorLocal = new Task(() =>
             {
-                var monitor = MonitorNode.StartNew(System);
-                monitor.WaitForBlock();
+                monitor.WaitPersistedBlock();
                 local = DateTime.Now;
+                if (showBlock)
+                {
+                    showBlock = false;
+                    Console.WriteLine($"Updated block index to {monitor.LastPersistedBlockIndex}");
+                }
             });
+
+            if (printMessages)
+            {
+                Console.WriteLine($"Current block index is {lastBlockRemote}");
+                Console.WriteLine("Waiting for the next block...");
+            }
 
             monitorRemote.Start();
             monitorLocal.Start();
+
             Task.WaitAll(monitorRemote, monitorLocal);
 
             var delay = remote - local;
