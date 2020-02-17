@@ -4,6 +4,7 @@ using Neo.Network.P2P;
 using Neo.Network.P2P.Payloads;
 using System;
 using System.Diagnostics;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Neo.Plugins
@@ -433,35 +434,33 @@ namespace Neo.Plugins
         /// </summary>
         private bool OnCheckCPUCommand()
         {
-            bool run = true;
+            var cancel = new CancellationTokenSource();
 
             Task task = Task.Run(async () =>
             {
                 var monitor = new CpuUsageMonitor();
 
-                while (run)
+                while (!cancel.Token.IsCancellationRequested)
                 {
                     try
                     {
-                        var total = monitor.CheckAllThreads(run);
-                        if (run)
+                        var total = monitor.CheckAllThreads(true);
+                        if (!cancel.Token.IsCancellationRequested)
                         {
                             Console.WriteLine($"Active threads: {monitor.ThreadCount,3}\tTotal CPU usage: {total,8:0.00 %}");
                         }
 
-                        await Task.Delay(1000);
+                        await Task.Delay(1000, cancel.Token);
                     }
                     catch
                     {
                         // if any unexpected exception is thrown, stop the loop and finish the task
-                        run = false;
+                        cancel.Cancel();
                     }
                 }
             });
             Console.ReadLine();
-
-            run = false;
-            task.Wait();
+            cancel.Cancel();
 
             return true;
         }
@@ -506,10 +505,10 @@ namespace Neo.Plugins
             var writePerSec = new PerformanceCounter("Process", "IO Write Bytes/sec", "_Total");
             var readPerSec = new PerformanceCounter("Process", "IO Read Bytes/sec", "_Total");
 
-            bool run = true;
+            var cancel = new CancellationTokenSource();
             Task task = Task.Run(async () =>
             {
-                while (run)
+                while (!cancel.Token.IsCancellationRequested)
                 {
                     Console.Clear();
                     string diskWriteUnit = "KB/s";
@@ -531,11 +530,11 @@ namespace Neo.Plugins
 
                     Console.WriteLine($"Disk write: {diskWritePerSec:0.0#} {diskWriteUnit}");
                     Console.WriteLine($"Disk read:  {diskReadPerSec:0.0#} {diskReadUnit}");
-                    await Task.Delay(1000);
+                    await Task.Delay(1000, cancel.Token);
                 }
             });
             Console.ReadLine();
-            run = false;
+            cancel.Cancel();
 
             return true;
         }
