@@ -1,7 +1,7 @@
-using Akka.Actor;
 using Neo.Ledger;
 using Neo.Network.P2P;
 using Neo.Network.P2P.Payloads;
+using Neo.Persistence;
 using System;
 using System.Diagnostics;
 using System.Threading;
@@ -9,13 +9,21 @@ using System.Threading.Tasks;
 
 namespace Neo.Plugins
 {
-    public class PerformanceCheck : Plugin
+    public class PerformanceCheck : Plugin, IPersistencePlugin
     {
         public override string Name => "PerformanceCheck";
 
         protected override void Configure()
         {
             Settings.Load(GetConfiguration());
+        }
+
+        private delegate void CommitHandler(StoreView snapshot);
+        private event CommitHandler OnCommitEvent;
+
+        public void OnCommit(StoreView snapshot)
+        {
+            OnCommitEvent?.Invoke(snapshot);
         }
 
         protected override bool OnMessage(object message)
@@ -195,6 +203,9 @@ namespace Neo.Plugins
         /// <summary>
         /// Calculates the delay in the synchronization of the blocks between the connected nodes
         /// </summary>
+        /// <param name="printMessages">
+        /// Specifies if the messages should be printed in the console.
+        /// </param>
         /// <returns>
         /// If the number of remote nodes is greater than zero, returns the delay in the
         /// synchronization between the local and the remote nodes in milliseconds; otherwise,
@@ -208,36 +219,37 @@ namespace Neo.Plugins
                 return 0;
             }
 
+            var lastBlock = Math.Max(lastBlockRemote, Blockchain.Singleton.Height);
+
             bool showBlock = printMessages;
             DateTime remote = DateTime.Now;
             DateTime local = remote;
 
-            NodeMonitor monitor = NodeMonitor.StartNew(System, lastBlockRemote);
             Task monitorRemote = new Task(() =>
             {
-                monitor.WaitRemoteBlock();
+                var lastRemoteBlockIndex = WaitPersistedBlock(lastBlock);
                 remote = DateTime.Now;
                 if (showBlock)
                 {
                     showBlock = false;
-                    Console.WriteLine($"Updated block index to {monitor.LastRemoteBlockIndex}");
+                    Console.WriteLine($"Updated block index to {lastRemoteBlockIndex}");
                 }
             });
 
             Task monitorLocal = new Task(() =>
             {
-                monitor.WaitPersistedBlock();
+                var lastPersistedBlockIndex = WaitRemoteBlock(lastBlock);
                 local = DateTime.Now;
                 if (showBlock)
                 {
                     showBlock = false;
-                    Console.WriteLine($"Updated block index to {monitor.LastPersistedBlockIndex}");
+                    Console.WriteLine($"Updated block index to {lastPersistedBlockIndex}");
                 }
             });
 
             if (printMessages)
             {
-                Console.WriteLine($"Current block index is {lastBlockRemote}");
+                Console.WriteLine($"Current block index is {lastBlock}");
                 Console.WriteLine("Waiting for the next block...");
             }
 
@@ -249,6 +261,66 @@ namespace Neo.Plugins
             var delay = remote - local;
 
             return Math.Abs(delay.TotalMilliseconds);
+        }
+
+        /// <summary>
+        /// Pauses the current thread until a new block is persisted in the blockchain
+        /// </summary>
+        /// <param name="blockIndex">
+        /// Specifies if the block index to start monitoring.
+        /// </param>
+        /// <returns>
+        /// Returns the index of the persisted block.
+        /// </returns>
+        private uint WaitPersistedBlock(uint blockIndex)
+        {
+            var persistedBlockIndex = blockIndex;
+            var updatePersistedBlock = new TaskCompletionSource<bool>();
+
+            CommitHandler commit = (snapshot) =>
+            {
+                if (snapshot.Height > blockIndex)
+                {
+                    persistedBlockIndex = snapshot.Height;
+                    updatePersistedBlock.TrySetResult(true);
+                }
+            };
+
+            OnCommitEvent += commit;
+            updatePersistedBlock.Task.Wait();
+            OnCommitEvent -= commit;
+
+            return persistedBlockIndex;
+        }
+
+        /// <summary>
+        /// Pauses the current thread until a new block is received from remote nodes
+        /// </summary>
+        /// <param name="blockIndex">
+        /// Specifies if the block index to start monitoring.
+        /// </param>
+        /// <returns>
+        /// Returns the index of the received block.
+        /// </returns>
+        private uint WaitRemoteBlock(uint blockIndex)
+        {
+            var remoteBlockIndex = blockIndex;
+            var updateRemoteBlock = new TaskCompletionSource<bool>();
+
+            LocalNode.RemoteBlockHandler remoteBlock = (blockHeight) =>
+            {
+                if (blockHeight > blockIndex)
+                {
+                    remoteBlockIndex = blockHeight;
+                    updateRemoteBlock.TrySetResult(true);
+                }
+            };
+
+            LocalNode.Singleton.NewRemoteBlockEvent += remoteBlock;
+            updateRemoteBlock.Task.Wait();
+            LocalNode.Singleton.NewRemoteBlockEvent -= remoteBlock;
+
+            return remoteBlockIndex;
         }
 
         /// <summary>
@@ -284,10 +356,10 @@ namespace Neo.Plugins
             switch (args[1].ToLower())
             {
                 case "size":
-                    return OnTransactionSize(args);
+                    return OnTransactionSizeCommand(args);
                 case "avgsize":
                 case "averagesize":
-                    return OnTransactionAverageSize(args);
+                    return OnTransactionAverageSizeCommand(args);
                 default:
                     return false;
             }
@@ -297,7 +369,7 @@ namespace Neo.Plugins
         /// Process "transaction size" command
         /// Prints the size of the transaction in bytes identified by its hash
         /// </summary>
-        private bool OnTransactionSize(string[] args)
+        private bool OnTransactionSizeCommand(string[] args)
         {
             if (args.Length != 3)
             {
@@ -332,7 +404,7 @@ namespace Neo.Plugins
         /// Process "transaction avgsize" command
         /// Prints the average size in bytes of the latest transactions
         /// </summary>
-        private bool OnTransactionAverageSize(string[] args)
+        private bool OnTransactionAverageSizeCommand(string[] args)
         {
             if (args.Length > 3)
             {
