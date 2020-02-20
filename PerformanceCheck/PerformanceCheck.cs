@@ -1,3 +1,4 @@
+using Akka.Actor;
 using Neo.Ledger;
 using Neo.Network.P2P;
 using Neo.Network.P2P.Payloads;
@@ -307,18 +308,26 @@ namespace Neo.Plugins
             var remoteBlockIndex = blockIndex;
             var updateRemoteBlock = new TaskCompletionSource<bool>();
 
-            LocalNode.RemoteBlockHandler remoteBlock = (blockHeight) =>
+            var cancel = new CancellationTokenSource();
+            Task broadcast = Task.Run(() =>
             {
-                if (blockHeight > blockIndex)
+                while (!cancel.Token.IsCancellationRequested)
                 {
-                    remoteBlockIndex = blockHeight;
-                    updateRemoteBlock.TrySetResult(true);
+                    // receive a PingPayload is what updates RemoteNode LastBlockIndex
+                    System.LocalNode.Tell(Message.Create(MessageCommand.Ping, PingPayload.Create(blockIndex)));
                 }
-            };
+            });
 
-            LocalNode.Singleton.NewRemoteBlockEvent += remoteBlock;
-            updateRemoteBlock.Task.Wait();
-            LocalNode.Singleton.NewRemoteBlockEvent -= remoteBlock;
+            Task remoteBlock = Task.Run(() =>
+            {
+                while (remoteBlockIndex == blockIndex)
+                {
+                    remoteBlockIndex = GetMaxRemoteBlockCount();
+                }
+            });
+
+            remoteBlock.Wait();
+            cancel.Cancel();
 
             return remoteBlockIndex;
         }
