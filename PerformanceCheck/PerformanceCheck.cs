@@ -4,13 +4,14 @@ using Neo.Network.P2P;
 using Neo.Network.P2P.Payloads;
 using Neo.Persistence;
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace Neo.Plugins
 {
-    public class PerformanceCheck : Plugin, IPersistencePlugin
+    public class PerformanceCheck : Plugin, IPersistencePlugin, IP2PPlugin
     {
         public override string Name => "PerformanceCheck";
 
@@ -25,6 +26,15 @@ namespace Neo.Plugins
         public void OnCommit(StoreView snapshot)
         {
             OnCommitEvent?.Invoke(snapshot);
+        }
+
+        private delegate void P2PMessageHandler(Message message);
+        private event P2PMessageHandler OnP2PMessageEvent;
+
+        public bool OnP2PMessage(Message message)
+        {
+            OnP2PMessageEvent?.Invoke(message);
+            return true;
         }
 
         protected override bool OnMessage(object message)
@@ -194,8 +204,20 @@ namespace Neo.Plugins
             }
             else
             {
-                var delayInSeconds = GetBlockSynchronizationDelay(true) / 1000.0;
-                Console.WriteLine($"Time to synchronize to the last remote block: {delayInSeconds:0.#} sec");
+                var delayInMilliseconds = GetBlockSynchronizationDelay(true);
+                if (delayInMilliseconds <= 0)
+                {
+                    Console.WriteLine("The time to confirm that a new block has timed out.");
+                }
+                else if (delayInMilliseconds < 1000)
+                {
+                    Console.WriteLine($"Time to synchronize to the last remote block: {delayInMilliseconds:0.#} ms");
+                }
+                else
+                {
+                    var delayInSeconds = delayInMilliseconds / 1000.0;
+                    Console.WriteLine($"Time to synchronize to the last remote block: {delayInSeconds:0.#} sec");
+                }
             }
 
             return true;
@@ -214,6 +236,9 @@ namespace Neo.Plugins
         /// </returns>
         private double GetBlockSynchronizationDelay(bool printMessages = false)
         {
+            var cancel = new CancellationTokenSource();
+            var timeLimitInMilliseconds = 60000; // limit the waiting time to 1 second
+
             var lastBlockRemote = GetMaxRemoteBlockCount();
             if (lastBlockRemote == 0)
             {
@@ -228,25 +253,35 @@ namespace Neo.Plugins
 
             Task monitorRemote = new Task(() =>
             {
-                var lastRemoteBlockIndex = WaitPersistedBlock(lastBlock);
+                var lastRemoteBlockIndex = WaitPersistedBlock(lastBlock, cancel.Token);
                 remote = DateTime.Now;
                 if (showBlock)
                 {
                     showBlock = false;
                     Console.WriteLine($"Updated block index to {lastRemoteBlockIndex}");
                 }
-            });
+            }, cancel.Token);
 
             Task monitorLocal = new Task(() =>
             {
-                var lastPersistedBlockIndex = WaitRemoteBlock(lastBlock);
+                var lastPersistedBlockIndex = WaitRemoteBlock(lastBlock, cancel.Token);
                 local = DateTime.Now;
                 if (showBlock)
                 {
                     showBlock = false;
                     Console.WriteLine($"Updated block index to {lastPersistedBlockIndex}");
                 }
-            });
+            }, cancel.Token);
+
+            Task timer = new Task(async () =>
+            {
+                try
+                {
+                    await Task.Delay(timeLimitInMilliseconds, cancel.Token);
+                    cancel.Cancel();
+                }
+                catch (OperationCanceledException) { }
+            }, cancel.Token);
 
             if (printMessages)
             {
@@ -254,10 +289,24 @@ namespace Neo.Plugins
                 Console.WriteLine("Waiting for the next block...");
             }
 
+            List<Task> tasks = new List<Task>()
+            {
+                monitorRemote, monitorLocal
+            };
+
             monitorRemote.Start();
             monitorLocal.Start();
+            timer.Start();
 
-            Task.WaitAll(monitorRemote, monitorLocal);
+            try
+            {
+                Task.WaitAll(tasks.ToArray(), cancel.Token);
+                cancel.Cancel();
+            }
+            catch (OperationCanceledException)
+            {
+                return 0;
+            }
 
             var delay = remote - local;
 
@@ -273,7 +322,7 @@ namespace Neo.Plugins
         /// <returns>
         /// Returns the index of the persisted block.
         /// </returns>
-        private uint WaitPersistedBlock(uint blockIndex)
+        private uint WaitPersistedBlock(uint blockIndex, CancellationToken token)
         {
             var persistedBlockIndex = blockIndex;
             var updatePersistedBlock = new TaskCompletionSource<bool>();
@@ -288,7 +337,11 @@ namespace Neo.Plugins
             };
 
             OnCommitEvent += commit;
-            updatePersistedBlock.Task.Wait();
+            try
+            {
+                updatePersistedBlock.Task.Wait(token);
+            }
+            catch (OperationCanceledException) { }
             OnCommitEvent -= commit;
 
             return persistedBlockIndex;
@@ -303,7 +356,7 @@ namespace Neo.Plugins
         /// <returns>
         /// Returns the index of the received block.
         /// </returns>
-        private uint WaitRemoteBlock(uint blockIndex)
+        private uint WaitRemoteBlock(uint blockIndex, CancellationToken token)
         {
             var remoteBlockIndex = blockIndex;
             var updateRemoteBlock = new TaskCompletionSource<bool>();
@@ -318,15 +371,27 @@ namespace Neo.Plugins
                 }
             });
 
-            Task remoteBlock = Task.Run(() =>
+            P2PMessageHandler p2pMessage = (message) =>
             {
-                while (remoteBlockIndex == blockIndex)
+                if (message.Command == MessageCommand.Pong && message.Payload is PingPayload)
                 {
-                    remoteBlockIndex = GetMaxRemoteBlockCount();
+                    var lastBlockIndex = GetMaxRemoteBlockCount();
+                    if (lastBlockIndex > remoteBlockIndex)
+                    {
+                        remoteBlockIndex = lastBlockIndex;
+                        updateRemoteBlock.TrySetResult(true);
+                    }
                 }
-            });
+            };
 
-            remoteBlock.Wait();
+            OnP2PMessageEvent += p2pMessage;
+            try
+            {
+                updateRemoteBlock.Task.Wait(token);
+            }
+            catch (OperationCanceledException) { }
+            OnP2PMessageEvent -= p2pMessage;
+            
             cancel.Cancel();
 
             return remoteBlockIndex;
