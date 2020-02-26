@@ -864,13 +864,13 @@ namespace Neo.Plugins
         }
 
         /// <summary>
-        /// Calculates the time difference between the persist and the commit
+        /// Calculates the time difference between the commit request and the actual commit
         /// </summary>
         /// <param name="printMessages">
         /// Specifies if the messages should be printed in the console.
         /// </param>
         /// <returns>
-        /// Returns the difference between the persist time and the commit time
+        /// Returns the difference between the commit request time and the actual commit time
         /// </returns>
         private double GetTimeToConfirm(bool printMessages = false)
         {
@@ -944,7 +944,7 @@ namespace Neo.Plugins
 
         /// <summary>
         /// Process "payload time" command
-        /// Prints the time in milliseconds to confirm the block
+        /// Prints the time in milliseconds to receive a payload
         /// </summary>
         private bool OnPayloadTimeCommand()
         {
