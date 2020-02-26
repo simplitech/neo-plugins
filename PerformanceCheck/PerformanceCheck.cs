@@ -255,7 +255,7 @@ namespace Neo.Plugins
             {
                 var lastRemoteBlockIndex = WaitPersistedBlock(lastBlock, cancel.Token);
                 remote = DateTime.Now;
-                if (showBlock)
+                if (showBlock && lastRemoteBlockIndex > lastBlock)
                 {
                     showBlock = false;
                     Console.WriteLine($"Updated block index to {lastRemoteBlockIndex}");
@@ -266,7 +266,7 @@ namespace Neo.Plugins
             {
                 var lastPersistedBlockIndex = WaitRemoteBlock(lastBlock, cancel.Token);
                 local = DateTime.Now;
-                if (showBlock)
+                if (showBlock && lastPersistedBlockIndex > lastBlock)
                 {
                     showBlock = false;
                     Console.WriteLine($"Updated block index to {lastPersistedBlockIndex}");
@@ -319,8 +319,12 @@ namespace Neo.Plugins
         /// <param name="blockIndex">
         /// Specifies if the block index to start monitoring.
         /// </param>
+        /// <param name="token">
+        /// A cancellation token to stop the task if the caller is canceled
+        /// </param>
         /// <returns>
-        /// Returns the index of the persisted block.
+        /// If the <paramref name="token"/> is canceled, returns <param name="blockIndex">;
+        /// otherwise, returns the index of the persisted block.
         /// </returns>
         private uint WaitPersistedBlock(uint blockIndex, CancellationToken token)
         {
@@ -353,18 +357,23 @@ namespace Neo.Plugins
         /// <param name="blockIndex">
         /// Specifies if the block index to start monitoring.
         /// </param>
+        /// <param name="token">
+        /// A cancellation token to stop the task if the caller is canceled
+        /// </param>
         /// <returns>
-        /// Returns the index of the received block.
+        /// If the <paramref name="token"/> is canceled, returns <param name="blockIndex">;
+        /// otherwise, returns the index of the received block.
         /// </returns>
         private uint WaitRemoteBlock(uint blockIndex, CancellationToken token)
         {
             var remoteBlockIndex = blockIndex;
             var updateRemoteBlock = new TaskCompletionSource<bool>();
 
-            var cancel = new CancellationTokenSource();
+            var stopBroadcast = new CancellationTokenSource();
+
             Task broadcast = Task.Run(() =>
             {
-                while (!cancel.Token.IsCancellationRequested)
+                while (!stopBroadcast.Token.IsCancellationRequested)
                 {
                     // receive a PingPayload is what updates RemoteNode LastBlockIndex
                     System.LocalNode.Tell(Message.Create(MessageCommand.Ping, PingPayload.Create(blockIndex)));
@@ -376,7 +385,7 @@ namespace Neo.Plugins
                 if (message.Command == MessageCommand.Pong && message.Payload is PingPayload)
                 {
                     var lastBlockIndex = GetMaxRemoteBlockCount();
-                    if (lastBlockIndex > remoteBlockIndex)
+                    if (lastBlockIndex > remoteBlockIndex && !token.IsCancellationRequested)
                     {
                         remoteBlockIndex = lastBlockIndex;
                         updateRemoteBlock.TrySetResult(true);
@@ -390,9 +399,9 @@ namespace Neo.Plugins
                 updateRemoteBlock.Task.Wait(token);
             }
             catch (OperationCanceledException) { }
+            stopBroadcast.Cancel();
+
             OnP2PMessageEvent -= p2pMessage;
-            
-            cancel.Cancel();
 
             return remoteBlockIndex;
         }
